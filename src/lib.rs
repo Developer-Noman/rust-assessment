@@ -5,10 +5,8 @@ pub mod diagnostics;
 
 #[cfg(test)]
 mod tests {
-    use tokio::task;
-    use crate::message_service::MessageService;
     use crate::router::TxRouter;
-    use crate::types::{Message, Transaction};
+    use crate::types::Transaction;
 
     #[tokio::test]
     async fn test_submit_and_count() {
@@ -75,18 +73,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_submissions() {
-        let file_manager = FileProcessor::new();
+        let router = TxRouter::new();
 
         let mut tasks = vec![];
 
-        for file_id in 1..50 {
-            let manager_clone = file_manager.clone();
+        for tx_id in 1..=50 {
+            let router = router.clone();
 
             tasks.push(tokio::spawn(async move {
-                manager_clone.process_file(File {
-                    id: file_id,
-                    filename: format!("file_{}.txt", file_id),
-                    content: vec![],
+                router.submit(Transaction {
+                    id: tx_id,
+                    wallet: format!("wallet_{tx_id}"),
+                    value: 1,
                 }).await;
             }));
         }
@@ -95,7 +93,84 @@ mod tests {
             task.await.unwrap();
         }
 
-        assert_eq!(file_manager.processed_files_count().await, 50);
+        assert_eq!(router.pending_count().await, 50);
     }
-    
+
+    #[tokio::test]
+    async fn test_build_batch_limit_larger_than_queue() {
+        let router = TxRouter::new();
+
+        for id in 0..2 {
+            router.submit(Transaction {
+                id,
+                wallet: "user".into(),
+                value: 10,
+            }).await;
+        }
+
+        let batch = router.build_batch(10).await.unwrap();
+
+        assert_eq!(batch.transactions.len(), 2);
+        assert_eq!(router.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_build_batch_limit_zero() {
+        let router = TxRouter::new();
+
+        router.submit(Transaction {
+            id: 1,
+            wallet: "alice".into(),
+            value: 100,
+        }).await;
+
+        assert!(router.build_batch(0).await.is_none());
+        assert_eq!(router.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_id_is_ignored() {
+        let router = TxRouter::new();
+
+        let tx = Transaction {
+            id: 7,
+            wallet: "alice".into(),
+            value: 100,
+        };
+
+        router.submit(tx.clone()).await;
+        router.submit(tx).await;
+
+        assert_eq!(router.pending_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_resubmit_after_finalize() {
+        let router = TxRouter::new();
+
+        router.submit(Transaction {
+            id: 10,
+            wallet: "alice".into(),
+            value: 100,
+        }).await;
+
+        let batch = router.build_batch(1).await.unwrap();
+        router.finalize_batch(batch).await;
+
+        router.submit(Transaction {
+            id: 10,
+            wallet: "alice".into(),
+            value: 100,
+        }).await;
+
+        assert_eq!(router.pending_count().await, 0);
+
+        router.submit(Transaction {
+            id: 11,
+            wallet: "bob".into(),
+            value: 50,
+        }).await;
+
+        assert_eq!(router.pending_count().await, 1);
+    }
 }

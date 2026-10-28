@@ -29,7 +29,7 @@ impl TxRouter {
         let mut pending = self.pending.lock().await;
         let seen = self.seen.lock().await;
 
-        if seen.contains(&tx.id) {
+        if seen.contains(&tx.id) || pending.iter().any(|waiting| waiting.id == tx.id) {
             return;
         }
 
@@ -40,11 +40,12 @@ impl TxRouter {
     pub async fn build_batch(&self, limit: usize) -> Option<Batch> {
         let mut pending = self.pending.lock().await;
 
-        if pending.is_empty() {
+        if pending.is_empty() || limit == 0 {
             return None;
         }
 
-        let items = pending.drain(0..limit).collect::<Vec<_>>();
+        let take = limit.min(pending.len());
+        let items = pending.drain(0..take).collect::<Vec<_>>();
 
         let mut counter = self.batch_counter.lock().await;
 
